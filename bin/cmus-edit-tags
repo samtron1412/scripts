@@ -1,7 +1,7 @@
 #!/bin/sh
-file=$(cmus-remote -C 'echo {}')
+file=$(/usr/bin/cmus-remote -C 'echo {}')
 
 if [ -f "$file" ]
 then /usr/bin/puddletag "$file"
-else echo "Oops, couldn't file selected tracks" >&2
+else /usr/bin/cmus-remote -C "echo Oops, couldn't file selected tracks"
 fi
