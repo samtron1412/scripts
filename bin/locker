@@ -1,0 +1,4 @@
+#!/bin/bash
+# Lock the screen and turn it off
+
+i3lock && sleep 1 && xset dpms force off
