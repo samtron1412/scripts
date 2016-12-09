@@ -1,0 +1,10 @@
+#!/bin/bash
+
+case "$2" in
+    CONNECTED)
+        systemctl start openvpn-client@la3.service;
+        ;;
+    DISCONNECTED)
+        systemctl stop openvpn-client@la3.service;
+        ;;
+esac
