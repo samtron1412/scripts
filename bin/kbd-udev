@@ -1,0 +1,2 @@
+#!/bin/bash
+echo /home/glider/bin/kbd | at now
