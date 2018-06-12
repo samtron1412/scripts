@@ -2,9 +2,9 @@
 
 case "$2" in
     CONNECTED)
-        systemctl start openvpn-client@la.service;
+        systemctl start openvpn-client@la2.service;
         ;;
     DISCONNECTED)
-        systemctl stop openvpn-client@la.service;
+        systemctl stop openvpn-client@la2.service;
         ;;
 esac
