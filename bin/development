@@ -1,0 +1,80 @@
+#!/bin/bash
+
+
+
+display_usage() {
+cat <<EOF
+Usage: $0 [options]
+
+-h| --help           this is some help text.
+                     this is more help text.
+-1|--first-option    this is my first option
+-2|--second-option   this is my second option
+EOF
+}
+
+# Check the arguments
+if [ $# -eq 0 ]
+  then
+    echo "No arguments supplied"
+    display_usage
+    exit 1
+fi
+
+# Process arguments and options
+POSITIONAL=()
+while [[ $# -gt 0 ]]
+do
+key="$1"
+
+case $key in
+    -s|--session)
+    SESSION="$2"
+    shift # past argument
+    shift # past value
+    ;;
+    --default)
+    DEFAULT=YES
+    shift # past argument
+    ;;
+    *)    # unknown option
+    POSITIONAL+=("$1") # save it in an array for later
+    shift # past argument
+    ;;
+esac
+done
+set -- "${POSITIONAL[@]}" # restore positional parameters
+
+
+
+### TMUX ###
+
+# Check for the existing session
+tmux has-session -t "${SESSION}"
+
+if [ $? != 0 ]
+then
+  # Create a new session and a new window
+  tmux new-session -s "${SESSION}" -n editor -d
+
+  # Change the current directory
+  tmux send-keys -t "${SESSION}" 'cd ~/repo/docs' C-m
+
+  # Start vim
+  tmux send-keys -t "${SESSION}" 'vim' C-m
+
+  # Split vertically with 10% width
+  tmux split-window -v -p 10 -t "${SESSION}"
+
+  # Change the current directory of a specified pane
+  tmux send-keys -t "${SESSION}":1.2 'cd ~/repo/docs' C-m
+
+  # Creting a new window
+  tmux new-window -n console -t "${SESSION}"
+  tmux send-keys -t "${SESSION}":2 'cd ~/repo' C-m
+
+  # Selecting a window to display
+  tmux select-window -t "${SESSION}":1
+fi
+tmux attach -t "${SESSION}"
+
