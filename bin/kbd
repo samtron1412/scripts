@@ -1,8 +1,12 @@
 #!/bin/bash
+
+# Sleep to wait for the udev to detect the keyboard
 sleep 0.1
 DISPLAY=":0"
 HOME=/home/glider/
 XAUTHORITY=$HOME/.Xauthority
 export DISPLAY XAUTHORITY HOME
 
-setxkbmap -option caps:escape
+# Using Capslock as Ctrl, to unset all the options, run `$ setxkbmap
+# -option`
+setxkbmap -option ctrl:nocaps
