@@ -1,0 +1,177 @@
+#!/bin/bash
+
+# SSH to EC2 instance with auto-start capability
+# Uses SSH config file for host configuration
+# Usage: ec2ssh [instance-id] <ssh-config-hostname> [--region|-r region] [--profile|-p profile]
+# Example: ec2ssh i-1234567890abcdef0 my-server
+# Example: ec2ssh i-1234567890abcdef0 my-server --region us-west-2 --profile production
+# Example: ec2ssh my-server  (direct SSH without EC2 checks)
+
+# Parse command-line arguments
+region=""
+profile=""
+positional_args=()
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -r|--region)
+            region="$2"
+            shift 2
+            ;;
+        -p|--profile)
+            profile="$2"
+            shift 2
+            ;;
+        *)
+            positional_args+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# Restore positional parameters
+set -- "${positional_args[@]}"
+
+# Check required arguments
+if [ -z "$1" ]; then
+    echo "Usage: ec2ssh [instance-id] <ssh-config-hostname> [--region|-r region] [--profile|-p profile]"
+    echo ""
+    echo "Examples:"
+    echo "  ec2ssh i-1234567890abcdef0 my-server"
+    echo "  ec2ssh i-1234567890abcdef0 my-server --region us-west-2"
+    echo "  ec2ssh i-1234567890abcdef0 my-server -r us-east-1 -p production"
+    echo "  ec2ssh my-server  (direct SSH without EC2 checks)"
+    echo ""
+    echo "Arguments:"
+    echo "  instance-id          : EC2 instance ID (optional, e.g., i-1234567890abcdef0)"
+    echo "  ssh-config-hostname  : Host name defined in ~/.ssh/config"
+    echo ""
+    echo "Options:"
+    echo "  -r, --region         : AWS region (optional, uses AWS_REGION or AWS CLI default)"
+    echo "  -p, --profile        : AWS profile (optional, uses AWS_PROFILE or AWS CLI default)"
+    exit 1
+fi
+
+# Determine if first argument is an instance ID or hostname
+# Instance IDs start with 'i-' followed by alphanumeric characters
+if [[ "$1" =~ ^i-[0-9a-f]+$ ]]; then
+    # First argument is instance ID
+    instance_id="$1"
+    ssh_host="$2"
+
+    if [ -z "$ssh_host" ]; then
+        echo "Error: When providing instance ID, ssh-config-hostname is required"
+        exit 1
+    fi
+else
+    # First argument is hostname, no instance ID provided
+    instance_id=""
+    ssh_host="$1"
+fi
+
+# Set AWS environment variables for this script's scope
+# Use command-line flags if provided, otherwise use existing env vars (or AWS CLI defaults)
+if [ -n "$region" ]; then
+    export AWS_REGION="$region"
+fi
+
+if [ -n "$profile" ]; then
+    export AWS_PROFILE="$profile"
+fi
+
+# If no instance ID provided, connect directly via SSH
+if [ -z "$instance_id" ]; then
+    echo "Connecting directly to $ssh_host..."
+    TERM=xterm-256color ssh "$ssh_host"
+    exit $?
+fi
+
+echo "Checking status of instance: $instance_id"
+
+# Get instance state
+state=$(aws ec2 describe-instances \
+    --instance-ids "$instance_id" \
+    --query 'Reservations[0].Instances[0].State.Name' \
+    --output text 2>&1)
+
+if [[ "$state" == *"error"* ]] || [[ "$state" == "None" ]]; then
+    echo "Error: Unable to find instance $instance_id or AWS CLI error"
+    echo "$state"
+    exit 1
+fi
+
+echo "Current state: $state"
+
+# Track if we just started the instance
+just_started=false
+
+# If instance is stopped, start it
+if [ "$state" = "stopped" ]; then
+    echo "Instance is stopped. Starting instance..."
+    aws ec2 start-instances --instance-ids "$instance_id" > /dev/null
+
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to start instance"
+        exit 1
+    fi
+
+    echo "Waiting for instance to be running..."
+    aws ec2 wait instance-running --instance-ids "$instance_id"
+
+    if [ $? -ne 0 ]; then
+        echo "Error: Timeout waiting for instance to start"
+        exit 1
+    fi
+
+    echo "Instance is now running"
+    just_started=true
+elif [ "$state" = "pending" ]; then
+    echo "Instance is starting up. Waiting..."
+    aws ec2 wait instance-running --instance-ids "$instance_id"
+    just_started=true
+elif [ "$state" != "running" ]; then
+    echo "Error: Instance is in state '$state' and cannot be connected to"
+    exit 1
+fi
+
+echo "Instance is ready. Connecting to $ssh_host..."
+
+# Wait for SSH service to be ready if instance was just started
+if [ "$just_started" = true ]; then
+    echo "Waiting 30 seconds for SSH service to initialize..."
+    sleep 30
+
+    # Retry SSH connection with exponential backoff
+    max_retries=5
+    retry=0
+    wait_time=5
+
+    while [ $retry -lt $max_retries ]; do
+        echo "Attempting SSH connection (attempt $((retry + 1))/$max_retries)..."
+
+        TERM=xterm-256color ssh -o ConnectTimeout=10 "$ssh_host"
+        ssh_exit=$?
+
+        if [ $ssh_exit -eq 0 ]; then
+            # Successful connection and clean exit
+            exit 0
+        elif [ $ssh_exit -eq 255 ]; then
+            # Connection failed, retry
+            retry=$((retry + 1))
+            if [ $retry -lt $max_retries ]; then
+                echo "Connection failed. Waiting ${wait_time} seconds before retry..."
+                sleep $wait_time
+                wait_time=$((wait_time * 2))
+            fi
+        else
+            # Other SSH error (like user cancelled)
+            exit $ssh_exit
+        fi
+    done
+
+    echo "Error: Failed to establish SSH connection after $max_retries attempts"
+    exit 1
+else
+    # Instance was already running, connect directly
+    TERM=xterm-256color ssh "$ssh_host"
+fi
