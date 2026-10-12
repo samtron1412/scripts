@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+AWS_CREDS_PATH="${AWS_CREDS_PATH:-$HOME/.aws/credentials}"
+IAM_ROLE_HOST="${IAM_ROLE_HOST:-fabric-data-credentials}"
+DATAGRIP_PROFILE="${DATAGRIP_PROFILE:-datagripfcst}"
+IAM_ARN="${IAM_ARN:-arn:aws:iam::100380700689:role/RedshiftGIPFCSTBIRSAndesDSAccess}"
+ROLE_SESSION_NAME="${ROLE_SESSION_NAME:-hello-it-is-I}"
+
+usage() {
+  cat <<USAGE
+Usage: $(basename "$0") [--host HOST] [--role-arn ARN] [--profile NAME] [--creds-path PATH]
+Env overrides: IAM_ROLE_HOST, IAM_ARN, DATAGRIP_PROFILE, AWS_CREDS_PATH, ROLE_SESSION_NAME
+Note: This script assumes you have an SSH host configured in ~/.ssh/config matching IAM_ROLE_HOST.
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host) IAM_ROLE_HOST="$2"; shift 2 ;;
+    --role-arn) IAM_ARN="$2"; shift 2 ;;
+    --profile) DATAGRIP_PROFILE="$2"; shift 2 ;;
+    --creds-path) AWS_CREDS_PATH="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown arg: $1"; usage; exit 1 ;;
+  esac
+done
+
+for bin in aws ssh jq; do
+  command -v "$bin" >/dev/null 2>&1 || { echo "Missing dependency: $bin" >&2; exit 1; }
+done
+
+echo "Updating datagrip AWS credentials ($AWS_CREDS_PATH)"
+mkdir -p "$(dirname "$AWS_CREDS_PATH")"
+
+if aws configure get --profile "$DATAGRIP_PROFILE" aws_access_key_id >/dev/null 2>&1; then
+  existing_key="$(aws configure get --profile "$DATAGRIP_PROFILE" aws_access_key_id || true)"
+  existing_secret="$(aws configure get --profile "$DATAGRIP_PROFILE" aws_secret_access_key || true)"
+  existing_token="$(aws configure get --profile "$DATAGRIP_PROFILE" aws_session_token || true)"
+  printf 'Profile %s already exists. Contains:\n\taws_access_key_id=%s\n\taws_secret_access_key=%s\n\taws_session_token=%s\n' \
+    "$DATAGRIP_PROFILE" "$existing_key" "$existing_secret" "$existing_token"
+else
+  echo "Profile $DATAGRIP_PROFILE does not exist."
+fi
+
+aws_cli_cmd="aws sts assume-role --role-arn \"$IAM_ARN\" --role-session-name \"$ROLE_SESSION_NAME\""
+echo "Running (on $IAM_ROLE_HOST): $aws_cli_cmd"
+json_out="$(ssh "$IAM_ROLE_HOST" "$aws_cli_cmd")"
+read -r KEY_ID SECRET TOKEN < <(echo "$json_out" | jq -r '.Credentials | [.AccessKeyId, .SecretAccessKey, .SessionToken] | @tsv')
+
+printf 'New Credentials:\n\taws_access_key_id=%s\n\taws_secret_access_key=%s\n\taws_session_token=%s\n' \
+  "$KEY_ID" "$SECRET" "$TOKEN"
+
+aws configure set --profile "$DATAGRIP_PROFILE" aws_access_key_id "$KEY_ID"
+aws configure set --profile "$DATAGRIP_PROFILE" aws_secret_access_key "$SECRET"
+aws configure set --profile "$DATAGRIP_PROFILE" aws_session_token "$TOKEN"
+
+echo "Writing updated config..."
+
+v_key="$(aws configure get --profile "$DATAGRIP_PROFILE" aws_access_key_id)"
+v_secret="$(aws configure get --profile "$DATAGRIP_PROFILE" aws_secret_access_key)"
+v_token="$(aws configure get --profile "$DATAGRIP_PROFILE" aws_session_token)"
+
+[[ "$v_key" == "$KEY_ID" ]] && [[ "$v_secret" == "$SECRET" ]] && [[ "$v_token" == "$TOKEN" ]] \
+  && echo "Confirmed write successful!" || { echo "Validation failed"; exit 1; }
